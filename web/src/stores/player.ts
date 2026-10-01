@@ -609,17 +609,35 @@ export const usePlayerStore = defineStore('player', {
       }
     },
 
-    async playArtist(artistId: string, platform = 'netease') {
+    /**
+     * Queue an artist's songs. `all` = true asks the server for the singer's
+     * whole catalogue (the 全部歌曲 section's 播放全部 button) instead of the hot
+     * 50; that costs the server a few upstream round trips, so the caller gets a
+     * "loading" notice first.
+     */
+    async playArtist(artistId: string, platform = 'netease', all = false) {
       if (!this.activeBotId) return;
+      if (all) this.notify('正在载入该歌手的全部歌曲…', 'info');
       try {
-        const res = await axios.post(`/api/player/${this.activeBotId}/play-artist`, { artistId, platform });
+        const res = await axios.post(
+          `/api/player/${this.activeBotId}/play-artist`,
+          all ? { artistId, platform, all: true } : { artistId, platform },
+        );
         if (res.data?.message) {
           this.notify(res.data.message, res.data.ok === false ? 'error' : 'info');
         }
         this._setTiming(this.activeBotId, { serverElapsed: 0 });
         this._syncAfterAction();
       } catch (e: any) {
-        this.notify(e?.response?.status === 403 ? '没有权限播放整个歌手' : '播放歌手失败', 'error');
+        const status = e?.response?.status;
+        this.notify(
+          status === 403
+            ? '没有权限播放整个歌手'
+            : status === 501
+              ? '该音源不支持播放全部歌曲'
+              : '播放歌手失败',
+          'error',
+        );
       }
     },
 

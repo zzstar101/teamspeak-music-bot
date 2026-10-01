@@ -78,6 +78,15 @@ export interface ArtistDetail extends Artist {
   description?: string;
 }
 
+/** One page of an artist's COMPLETE catalogue (the "全部歌曲" list), as opposed
+ *  to `getArtistSongs`, which only ever returns the hot top-N. */
+export interface ArtistSongPage {
+  songs: Song[];
+  /** Total tracks the source reports for this artist (best effort). */
+  total: number;
+  hasMore: boolean;
+}
+
 export interface LyricLine {
   time: number; // seconds
   text: string;
@@ -140,5 +149,13 @@ export interface MusicProvider {
   getArtistDetail?(artistId: string): Promise<ArtistDetail | null>;
   /** The artist's most popular tracks, best-first. */
   getArtistSongs?(artistId: string, limit?: number): Promise<Song[]>;
+  /** One page of the artist's full catalogue, best-first. Sources that can only
+   *  expose a fixed top-N list leave this unimplemented (the route then 501s and
+   *  the web hides the "全部歌曲" section). */
+  getArtistAllSongs?(
+    artistId: string,
+    offset?: number,
+    limit?: number
+  ): Promise<ArtistSongPage>;
   getArtistAlbums?(artistId: string, limit?: number): Promise<Album[]>;
 }

@@ -13,6 +13,7 @@ import type {
   Album,
   Artist,
   ArtistDetail,
+  ArtistSongPage,
 } from "./provider.js";
 import { parseLyrics } from "./netease.js";
 
@@ -130,6 +131,28 @@ const qqFavApi = axios.create({
   timeout: 10000,
   headers: { referer: "https://y.qq.com/" },
 });
+
+/** True when a search_type=2 album search entry really belongs to this singer.
+ *  QQ fills singerMID for most albums; older entries only carry singer_list. */
+function isArtistAlbum(a: any, artistId: string): boolean {
+  const mid = a?.singerMID ?? a?.singer_mid;
+  if (mid) return String(mid) === artistId;
+  const singers = a?.singer_list ?? a?.singer ?? [];
+  return (
+    Array.isArray(singers) &&
+    singers.some((s: any) => String(s?.mid ?? s?.singerMID ?? "") === artistId)
+  );
+}
+
+/** Assembling a QQ singer's full catalogue costs one album-song request per
+ *  album, so the merged list is memoised per singer for a while. */
+const ARTIST_CATALOG_TTL_MS = 10 * 60 * 1000;
+const ARTIST_CATALOG_MAX_ENTRIES = 20;
+/** Album search pages to walk (50 albums each) and the hard cap on albums we
+ *  are willing to fetch songs for. */
+const ARTIST_ALBUM_MAX_PAGES = 3;
+const ARTIST_ALBUM_MAX = 50;
+const ARTIST_ALBUM_CONCURRENCY = 5;
 
 export function mapQqSongs(raw: any[] | null | undefined): Song[] {
   if (!Array.isArray(raw)) return [];
@@ -648,6 +671,116 @@ export class QQMusicProvider implements MusicProvider {
     return mapQqSongs(data?.songlist ?? []);
   }
 
+  /**
+   * One page of the singer's full catalogue. get_singer_detail_info ignores its
+   * `begin` parameter (begin=0/50/100 all return the same top 50 — verified
+   * 2026-10) and QQ has no working singer-song-list endpoint, so the catalogue
+   * is assembled from every album the singer owns: the hot 50 first (they rank
+   * best) followed by the album tracks, de-duplicated by songmid.
+   */
+  async getArtistAllSongs(artistId: string, offset = 0, limit = 50): Promise<ArtistSongPage> {
+    const catalogue = await this.buildArtistCatalog(artistId);
+    const safeOffset = Math.max(0, Math.trunc(offset) || 0);
+    const safeLimit = Math.max(1, Math.min(Math.trunc(limit) || 50, 100));
+    const songs = catalogue.slice(safeOffset, safeOffset + safeLimit);
+    return {
+      songs,
+      total: catalogue.length,
+      hasMore: safeOffset + songs.length < catalogue.length,
+    };
+  }
+
+  /** Memoised full catalogues, keyed by singer MID (see ARTIST_CATALOG_TTL_MS). */
+  private artistCatalog = new Map<string, { at: number; songs: Song[] }>();
+
+  private async buildArtistCatalog(artistId: string): Promise<Song[]> {
+    const cached = this.artistCatalog.get(artistId);
+    if (cached && Date.now() - cached.at < ARTIST_CATALOG_TTL_MS) return cached.songs;
+
+    const merged: Song[] = [];
+    const seen = new Set<string>();
+    const push = (song: Song) => {
+      if (!song.id || seen.has(song.id)) return;
+      seen.add(song.id);
+      merged.push(song);
+    };
+
+    for (const song of await this.getArtistSongs(artistId, 50)) push(song);
+
+    const albumIds = await this.fetchArtistAlbumIds(artistId);
+    for (let i = 0; i < albumIds.length; i += ARTIST_ALBUM_CONCURRENCY) {
+      const batch = albumIds.slice(i, i + ARTIST_ALBUM_CONCURRENCY);
+      const lists = await Promise.all(
+        batch.map((mid) => this.getAlbumSongs(mid).catch(() => [] as Song[]))
+      );
+      for (const list of lists) {
+        for (const song of list) push(song);
+      }
+    }
+
+    if (this.artistCatalog.size >= ARTIST_CATALOG_MAX_ENTRIES) {
+      const oldest = this.artistCatalog.keys().next().value;
+      if (oldest !== undefined) this.artistCatalog.delete(oldest);
+    }
+    this.artistCatalog.set(artistId, { at: Date.now(), songs: merged });
+    return merged;
+  }
+
+  /** Every album MID the singer owns, via paged album search (see getArtistAlbums). */
+  private async fetchArtistAlbumIds(artistId: string): Promise<string[]> {
+    const detail = await this.fetchSingerDetail(artistId, 1);
+    const name = detail?.singer_info?.name;
+    if (!name) return [];
+    const ids: string[] = [];
+    const seen = new Set<string>();
+    for (let page = 1; page <= ARTIST_ALBUM_MAX_PAGES; page++) {
+      const list = await this.searchArtistAlbums(name, page, 50);
+      if (list.length === 0) break;
+      let added = 0;
+      for (const entry of list) {
+        if (!isArtistAlbum(entry, artistId)) continue;
+        const mid = String(entry?.albumMID ?? entry?.album_mid ?? "");
+        if (mid && !seen.has(mid)) {
+          seen.add(mid);
+          ids.push(mid);
+          added++;
+        }
+      }
+      if (ids.length >= ARTIST_ALBUM_MAX) break;
+      // A page that adds nothing means the search has drifted off this singer.
+      if (added === 0) break;
+    }
+    return ids.slice(0, ARTIST_ALBUM_MAX);
+  }
+
+  /** search_type=2 album search for a singer name — raw entries, [] on failure. */
+  private async searchArtistAlbums(
+    name: string,
+    pageNum: number,
+    numPerPage: number
+  ): Promise<any[]> {
+    try {
+      const reqData = JSON.stringify({
+        req_album: {
+          module: "music.search.SearchCgiService",
+          method: "DoSearchForQQMusicDesktop",
+          param: {
+            query: name,
+            num_per_page: Math.max(10, Math.min(numPerPage, 50)),
+            page_num: pageNum,
+            search_type: 2,
+          },
+        },
+      });
+      const res = await qqMusicuApi.get("/cgi-bin/musicu.fcg", {
+        params: { format: "json", data: reqData },
+      });
+      return res.data?.req_album?.data?.body?.album?.list ?? [];
+    } catch {
+      return [];
+    }
+  }
+
   async getArtistAlbums(artistId: string, limit = 20): Promise<Album[]> {
     // QQ has no working "albums for this singer MID" endpoint: the homepage tab
     // API returns a null AlbumList and music.web_singer_info_svr/get_singer_album
@@ -657,38 +790,9 @@ export class QQMusicProvider implements MusicProvider {
     const detail = await this.fetchSingerDetail(artistId, 1);
     const name = detail?.singer_info?.name;
     if (!name) return [];
-    try {
-      const reqData = JSON.stringify({
-        req_album: {
-          module: "music.search.SearchCgiService",
-          method: "DoSearchForQQMusicDesktop",
-          param: {
-            query: name,
-            num_per_page: Math.max(10, Math.min(limit, 50)),
-            page_num: 1,
-            search_type: 2,
-          },
-        },
-      });
-      const res = await qqMusicuApi.get("/cgi-bin/musicu.fcg", {
-        params: { format: "json", data: reqData },
-      });
-      const list: any[] = res.data?.req_album?.data?.body?.album?.list ?? [];
-      const mine = list.filter((a: any) => {
-        const mid = a.singerMID ?? a.singer_mid;
-        if (mid) return String(mid) === artistId;
-        const singers = a.singer_list ?? a.singer ?? [];
-        return (
-          Array.isArray(singers) &&
-          singers.some(
-            (s: any) => String(s.mid ?? s.singerMID ?? "") === artistId
-          )
-        );
-      });
-      return mapQqAlbums(mine).slice(0, limit);
-    } catch {
-      return [];
-    }
+    const list = await this.searchArtistAlbums(name, 1, limit);
+    const mine = list.filter((a: any) => isArtistAlbum(a, artistId));
+    return mapQqAlbums(mine).slice(0, limit);
   }
 
   async getLyrics(songId: string): Promise<LyricLine[]> {

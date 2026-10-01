@@ -12,6 +12,7 @@ import type {
   Album,
   Artist,
   ArtistDetail,
+  ArtistSongPage,
 } from "./provider.js";
 
 export function parseLyrics(
@@ -311,6 +312,34 @@ export class NeteaseProvider implements MusicProvider {
       params: { id: artistId, limit, offset: 0, ...this.cookieParams },
     });
     return mapNeteaseAlbums(res.data?.hotAlbums);
+  }
+
+  /**
+   * Full catalogue page for the artist page's "全部歌曲" list: /artist/songs
+   * supports real offset paging (Adele reports total 345 with more=true, and
+   * offset=50/100/150 each return a fresh slice of 50). order=hot keeps the page
+   * ordering identical to getArtistSongs so the hot preview and the full list
+   * are one continuous ranking.
+   */
+  async getArtistAllSongs(artistId: string, offset = 0, limit = 50): Promise<ArtistSongPage> {
+    const safeOffset = Math.max(0, Math.trunc(offset) || 0);
+    const safeLimit = Math.max(1, Math.min(Math.trunc(limit) || 50, 100));
+    const res = await this.api.get("/artist/songs", {
+      params: {
+        id: artistId,
+        limit: safeLimit,
+        offset: safeOffset,
+        order: "hot",
+        ...this.cookieParams,
+      },
+    });
+    const songs = mapNeteaseSongs(res.data?.songs);
+    const reported = Number(res.data?.total);
+    const total = Number.isFinite(reported) && reported > 0 ? reported : safeOffset + songs.length;
+    const more = res.data?.more;
+    const hasMore =
+      typeof more === "boolean" ? more : safeOffset + songs.length < total;
+    return { songs, total, hasMore };
   }
 
   async getLyrics(songId: string): Promise<LyricLine[]> {

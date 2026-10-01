@@ -309,3 +309,57 @@ describe("NeteaseProvider per-user login (#164)", () => {
     expect(personal.platform).toBe("netease");
   });
 });
+
+describe("NeteaseProvider.getArtistAllSongs (全部歌曲 paging)", () => {
+  const rawSongs = [
+    { id: 1, name: "A", artists: [{ name: "X" }], album: { name: "Al" }, duration: 200000, fee: 0 },
+    { id: 2, name: "B", artists: [{ name: "X" }], album: { name: "Al" }, duration: 100000, fee: 0 },
+  ];
+
+  function withGet(p: NeteaseProvider, impl: (path: string, cfg: any) => any) {
+    const get = vi.fn(async (path: string, cfg: any) => ({ data: impl(path, cfg) }));
+    (p as any).api = { get };
+    return get;
+  }
+
+  it("pages /artist/songs with order=hot and reports total/hasMore", async () => {
+    const p = new NeteaseProvider("http://x");
+    const get = withGet(p, () => ({ songs: rawSongs, total: 345, more: true }));
+
+    const page = await p.getArtistAllSongs("46487", 50, 50);
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(get.mock.calls[0][0]).toBe("/artist/songs");
+    expect(get.mock.calls[0][1].params).toMatchObject({
+      id: "46487",
+      limit: 50,
+      offset: 50,
+      order: "hot",
+    });
+    expect(page.songs.map((s) => s.id)).toEqual(["1", "2"]);
+    expect(page.total).toBe(345);
+    expect(page.hasMore).toBe(true);
+  });
+
+  it("derives hasMore from total when the upstream omits `more`", async () => {
+    const p = new NeteaseProvider("http://x");
+    withGet(p, (_path, cfg) => ({
+      songs: rawSongs.slice(cfg.params.offset, cfg.params.offset + cfg.params.limit),
+      total: 2,
+    }));
+
+    expect((await p.getArtistAllSongs("1", 0, 1)).hasMore).toBe(true);
+    expect((await p.getArtistAllSongs("1", 1, 1)).hasMore).toBe(false);
+  });
+
+  it("clamps limit to 100, offset to >= 0, and derives a total when absent", async () => {
+    const p = new NeteaseProvider("http://x");
+    const get = withGet(p, () => ({ songs: rawSongs }));
+
+    const page = await p.getArtistAllSongs("1", -5, 500);
+
+    expect(get.mock.calls[0][1].params).toMatchObject({ limit: 100, offset: 0 });
+    expect(page.total).toBe(2);
+    expect(page.hasMore).toBe(false);
+  });
+});

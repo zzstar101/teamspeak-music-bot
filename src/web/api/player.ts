@@ -1,12 +1,37 @@
 import { Router } from "express";
 import type { BotManager } from "../../bot/manager.js";
 import type { BotDatabase } from "../../data/database.js";
-import type { MusicProvider } from "../../music/provider.js";
+import type { MusicProvider, Song, ArtistSongPage } from "../../music/provider.js";
 import type { Logger } from "../../logger.js";
 import { parseCommand } from "../../bot/commands.js";
 import { requireBotAccess } from "../middleware/requirePermission.js";
 import { authorize } from "../middleware/authorize.js";
 import { supportsPersonalLogin } from "./personal-music.js";
+
+/** Hard cap on how many tracks one "播放全部" request may queue — a safety net
+ *  against a pathological catalogue (and against an upstream paging bug). */
+const MAX_ARTIST_QUEUE = 500;
+const ARTIST_QUEUE_PAGE = 100;
+
+/** Walks every page of an artist's catalogue (best-first, de-duplicated). */
+export async function collectArtistSongs(
+  fetchPage: (artistId: string, offset?: number, limit?: number) => Promise<ArtistSongPage>,
+  artistId: string
+): Promise<Song[]> {
+  const songs: Song[] = [];
+  const seen = new Set<string>();
+  for (let offset = 0; offset < MAX_ARTIST_QUEUE; offset += ARTIST_QUEUE_PAGE) {
+    const page = await fetchPage(artistId, offset, ARTIST_QUEUE_PAGE);
+    for (const song of page.songs) {
+      if (!seen.has(song.id)) {
+        seen.add(song.id);
+        songs.push(song);
+      }
+    }
+    if (!page.hasMore || page.songs.length === 0) break;
+  }
+  return songs;
+}
 
 export function createPlayerRouter(
   botManager: BotManager,
@@ -475,7 +500,7 @@ export function createPlayerRouter(
   router.post("/:botId/play-artist", authorize({ capability: "player.control", guestFlag: "playCollection" }), async (req, res) => {
     try {
       const bot = (req as any).bot;
-      const { artistId, platform } = req.body;
+      const { artistId, platform, all } = req.body;
       if (!artistId) {
         res.status(400).json({ error: "artistId is required" });
         return;
@@ -493,12 +518,24 @@ export function createPlayerRouter(
         res.status(501).json({ error: "Not supported by this provider" });
         return;
       }
+      // `all: true` — the "播放全部" button in the artist page's 全部歌曲 section —
+      // queues the whole catalogue instead of the hot 50. A source that cannot
+      // page a catalogue is rejected rather than silently downgraded to 50.
+      const wantAll = all === true;
+      const fetchPage = provider.getArtistAllSongs?.bind(provider);
+      if (wantAll && !fetchPage) {
+        res.status(501).json({ error: "Not supported by this provider" });
+        return;
+      }
 
       // Stop current playback
       bot.getPlayer().stop();
       bot.getPlayer().resetFailures();
 
-      const songs = await provider.getArtistSongs(artistId, 50);
+      const songs =
+        wantAll && fetchPage
+          ? await collectArtistSongs(fetchPage, artistId)
+          : await provider.getArtistSongs(artistId, 50);
       if (songs.length === 0) {
         res.json({ ok: false, message: "该歌手暂无可用歌曲" });
         return;

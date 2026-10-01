@@ -303,6 +303,26 @@ export function createMusicRouter(
     }
   });
 
+  // One page of an artist's full catalogue for the "全部歌曲" list. Registered
+  // before /artist/:id purely for readability (Express only matches /artist/:id
+  // on a two-segment path, so the order is not load-bearing).
+  router.get("/artist/:id/songs", async (req, res) => {
+    try {
+      const provider = resolveProvider(req.query.platform, res);
+      if (!provider) return;
+      if (!provider.getArtistAllSongs) {
+        res.status(501).json({ error: "Not supported by this provider" });
+        return;
+      }
+      const offset = Math.max(0, parseInt(req.query.offset as string) || 0);
+      const limit = Math.min(100, Math.max(1, parseInt(req.query.limit as string) || 50));
+      const page = await provider.getArtistAllSongs(req.params.id, offset, limit);
+      res.json(page);
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   router.get("/artist/:id", async (req, res) => {
     try {
       const provider = resolveProvider(req.query.platform, res);

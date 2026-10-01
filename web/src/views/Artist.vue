@@ -91,6 +91,49 @@
           </router-link>
         </div>
       </section>
+
+      <!-- 全部歌曲: paged on demand (50 per page) so opening an artist page never
+           costs the full catalogue, which for QQ means one request per album. -->
+      <section class="artist-section">
+        <div class="section-head">
+          <h2 class="section-title">全部歌曲</h2>
+          <div class="section-actions">
+            <span v-if="allTotalCount" class="section-sub">共 {{ allTotalCount }} 首</span>
+            <button
+              v-if="canPlayAll && allSupported"
+              class="section-btn"
+              :disabled="allPlaying"
+              @click="playEverySong"
+            >
+              <Icon icon="mdi:play" />
+              播放全部
+            </button>
+            <button
+              v-if="allSupported && (!allSongs.length || allHasMore)"
+              class="section-btn"
+              :disabled="allLoading"
+              @click="loadMoreSongs"
+            >
+              {{ allLoading ? '加载中…' : allSongs.length ? '加载更多' : '加载全部歌曲' }}
+            </button>
+          </div>
+        </div>
+        <div v-if="allSongs.length" class="song-list">
+          <SongCard
+            v-for="(song, i) in allSongs"
+            :key="song.id"
+            :song="song"
+            :index="i + 1"
+            :active="store.currentSong?.id === song.id"
+            @play="store.playSong(song)"
+            @playNext="store.playNextSong(song)"
+            @add="store.addSong(song)"
+          />
+        </div>
+        <p v-else class="section-hint">
+          {{ allSupported ? '点击「加载全部歌曲」按热度浏览该歌手的完整目录' : '该音源暂不支持查看全部歌曲' }}
+        </p>
+      </section>
     </template>
 
     <div v-else class="loading">歌手不存在或加载失败</div>
@@ -98,7 +141,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import { Icon } from '@iconify/vue';
 import axios from 'axios';
@@ -129,6 +172,8 @@ interface Album {
 
 /** Hot songs shown before the "显示全部" expander (the API returns up to 50). */
 const HOT_SONG_PREVIEW = 10;
+/** Page size for the 全部歌曲 list (the server clamps to 100). */
+const ALL_SONGS_PAGE = 50;
 
 const store = usePlayerStore();
 const route = useRoute();
@@ -144,6 +189,14 @@ const albums = ref<Album[]>([]);
 const loading = ref(true);
 const expanded = ref(false);
 
+// 全部歌曲 state. Nothing is fetched until the user asks for it.
+const allSongs = ref<Song[]>([]);
+const allTotal = ref(0);
+const allHasMore = ref(false);
+const allLoading = ref(false);
+const allPlaying = ref(false);
+const allSupported = ref(true);
+
 const platform = computed(() => (route.query.platform as string) || 'netease');
 const platformLabel = computed(() => (platform.value === 'qq' ? 'QQ 音乐' : '网易云音乐'));
 
@@ -151,6 +204,9 @@ const visibleCount = computed(() =>
   expanded.value ? hotSongs.value.length : Math.min(HOT_SONG_PREVIEW, hotSongs.value.length),
 );
 const visibleSongs = computed(() => hotSongs.value.slice(0, visibleCount.value));
+
+/** Total to advertise: the source-reported count until the first page arrives. */
+const allTotalCount = computed(() => allTotal.value || artist.value?.songCount || 0);
 
 function artistId(): string {
   return route.params.id as string;
@@ -167,7 +223,57 @@ async function shuffleAll() {
   await store.playArtist(artistId(), platform.value);
 }
 
-onMounted(async () => {
+/** Fetch the next page of the full catalogue and append it (de-duplicated). */
+async function loadMoreSongs() {
+  if (allLoading.value) return;
+  allLoading.value = true;
+  try {
+    const res = await axios.get(`/api/music/artist/${artistId()}/songs`, {
+      params: {
+        platform: platform.value,
+        offset: allSongs.value.length,
+        limit: ALL_SONGS_PAGE,
+      },
+    });
+    const incoming: Song[] = res.data?.songs ?? [];
+    const seen = new Set(allSongs.value.map((s) => s.id));
+    allSongs.value = [...allSongs.value, ...incoming.filter((s) => !seen.has(s.id))];
+    allTotal.value = Number(res.data?.total) || allSongs.value.length;
+    allHasMore.value = incoming.length > 0 && res.data?.hasMore === true;
+  } catch (e: any) {
+    if (e?.response?.status === 501) {
+      allSupported.value = false;
+    } else {
+      store.notify('加载全部歌曲失败', 'error');
+    }
+  } finally {
+    allLoading.value = false;
+  }
+}
+
+/** Queue the singer's whole catalogue (server-side paging), not just the hot 50. */
+async function playEverySong() {
+  if (allPlaying.value) return;
+  allPlaying.value = true;
+  try {
+    await store.playArtist(artistId(), platform.value, true);
+  } finally {
+    allPlaying.value = false;
+  }
+}
+
+async function loadArtist() {
+  loading.value = true;
+  // Reset every per-artist piece: RouterView reuses this component when only the
+  // route params change, so artist → artist navigation must not show stale rows.
+  artist.value = null;
+  hotSongs.value = [];
+  albums.value = [];
+  expanded.value = false;
+  allSongs.value = [];
+  allTotal.value = 0;
+  allHasMore.value = false;
+  allSupported.value = true;
   try {
     const res = await axios.get(`/api/music/artist/${artistId()}`, {
       params: { platform: platform.value },
@@ -179,7 +285,10 @@ onMounted(async () => {
     artist.value = null;
   }
   loading.value = false;
-});
+}
+
+onMounted(loadArtist);
+watch(() => `${route.params.id}|${route.query.platform ?? ''}`, loadArtist);
 </script>
 
 <style lang="scss" scoped>
@@ -320,6 +429,56 @@ onMounted(async () => {
   font-size: 18px;
   font-weight: 700;
   margin-bottom: 14px;
+}
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+
+  .section-title {
+    margin-bottom: 0;
+  }
+}
+
+.section-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.section-sub {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.section-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+
+  &:not(:disabled):hover {
+    color: var(--color-primary);
+    border-color: var(--color-primary);
+  }
+}
+
+.section-hint {
+  font-size: 13px;
+  color: var(--text-tertiary);
 }
 
 .song-list {
