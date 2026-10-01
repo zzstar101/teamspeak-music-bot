@@ -32,6 +32,7 @@ import {
 } from "../data/config.js";
 import type { JellyfinPlaybackReporter } from "../music/jellyfin.js";
 import { BotProfileManager } from "./profile.js";
+import { hydrateQueuedSongMetadata } from "./song-metadata.js";
 import type { AvatarStore } from "../data/avatars.js";
 import {
   decideOccupancyAction,
@@ -987,6 +988,7 @@ export class BotInstance extends EventEmitter {
           song.id = detail.id;
         }
       }
+      await hydrateQueuedSongMetadata(song, provider);
       const result = await provider.getSongUrl(song.id);
       if (!result?.url) {
         this.logger.warn({ songId: song.id, name: song.name }, "No URL available, skipping");

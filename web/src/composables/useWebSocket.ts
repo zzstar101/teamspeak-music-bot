@@ -14,7 +14,6 @@ export function useWebSocket() {
 
     ws.onopen = () => {
       connected.value = true;
-      console.log('WebSocket connected');
     };
 
     ws.onmessage = (event) => {

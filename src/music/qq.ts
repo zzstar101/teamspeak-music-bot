@@ -1,4 +1,5 @@
 import axios, { type AxiosInstance } from "axios";
+import { decryptQrc } from "qrc-decoder";
 import type {
   MusicProvider,
   Song,
@@ -12,6 +13,94 @@ import type {
   Album,
 } from "./provider.js";
 import { parseLyrics } from "./netease.js";
+
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function extractQqQrcContent(value: string): string {
+  const cdataMatch = value.match(/<!\[CDATA\[([\s\S]*?)\]\]>/);
+  if (cdataMatch) return cdataMatch[1];
+
+  const attrMatch = value.match(/<Lyric_1\b[^>]*\bLyricContent=(["'])([\s\S]*?)\1[^>]*\/?>/);
+  return decodeXmlEntities(attrMatch?.[2] ?? value);
+}
+
+function parseQqTimedLyrics(value: string): LyricLine[] {
+  const content = extractQqQrcContent(value);
+  const lines: LyricLine[] = [];
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const qrcMatch = line.match(/^\[(\d+),(\d+)\](.*)$/);
+    if (qrcMatch) {
+      const time = Number(qrcMatch[1]) / 1000;
+      const wordPart = qrcMatch[3];
+      const words = Array.from(wordPart.matchAll(/([\s\S]*?)\((\d+),(\d+)\)/g))
+        .map((match) => ({
+          start: Number(match[2]) / 1000,
+          duration: Number(match[3]) / 1000,
+          text: match[1],
+        }))
+        .filter((word) => word.text.length > 0);
+      const text = words.length > 0
+        ? words.map((word) => word.text).join("")
+        : wordPart.replace(/\(\d+,\d+\)/g, "").trim();
+      if (text) lines.push({ time, text, words: words.length > 0 ? words : undefined });
+      continue;
+    }
+
+    const lrcMatch = line.match(/^\[(\d{2}):(\d{2})[.:](\d{2,3})\](.+)$/);
+    if (lrcMatch) {
+      const minutes = Number(lrcMatch[1]);
+      const seconds = Number(lrcMatch[2]);
+      const ms = Number(lrcMatch[3].padEnd(3, "0"));
+      const text = lrcMatch[4].trim();
+      if (text) lines.push({ time: minutes * 60 + seconds + ms / 1000, text });
+    }
+  }
+
+  return lines.sort((a, b) => a.time - b.time);
+}
+
+export function parseQqQrcLyrics(
+  qrcXml: string,
+  translationQrc?: string,
+  romanizationQrc?: string,
+): LyricLine[] {
+  const lines = parseQqTimedLyrics(qrcXml);
+  const translationMap = new Map(
+    parseQqTimedLyrics(translationQrc ?? "").map((line) => [Math.round(line.time * 100), line.text]),
+  );
+  const romanizationMap = new Map(
+    parseQqTimedLyrics(romanizationQrc ?? "").map((line) => [Math.round(line.time * 100), line.text]),
+  );
+
+  return lines.map((line) => {
+    const timeKey = Math.round(line.time * 100);
+    return {
+      ...line,
+      translation: translationMap.get(timeKey),
+      romanization: romanizationMap.get(timeKey),
+    };
+  });
+}
+
+function safeDecryptQrc(value: unknown): string {
+  if (typeof value !== "string" || !value) return "";
+  try {
+    return decryptQrc(value);
+  } catch {
+    return "";
+  }
+}
 
 // Primary search client: u.y.qq.com/cgi-bin/musicu.fcg (JSON sub-request
 // batch). Was broken ca. 2026-05 due to two upstream API changes:
@@ -471,6 +560,9 @@ export class QQMusicProvider implements MusicProvider {
   }
 
   async getLyrics(songId: string): Promise<LyricLine[]> {
+    const qrcLyrics = await this.getEncryptedQrcLyrics(songId);
+    if (qrcLyrics?.length) return qrcLyrics;
+
     const res = await this.api.get("/getLyric", {
       params: { songmid: songId, ...this.cookieParams },
     });
@@ -478,6 +570,51 @@ export class QQMusicProvider implements MusicProvider {
       res.data?.response?.lyric ?? res.data?.lyric ?? "",
       res.data?.response?.trans ?? res.data?.trans ?? ""
     );
+  }
+
+  private async getEncryptedQrcLyrics(songId: string): Promise<LyricLine[] | null> {
+    try {
+      const res = await qqMusicuApi.post(
+        "/cgi-bin/musicu.fcg",
+        this.buildMusicuPayload(
+          "music.musichallSong.PlayLyricInfo",
+          "GetPlayLyricInfo",
+          {
+            albumName: "",
+            crypt: 1,
+            ct: 19,
+            cv: 2111,
+            interval: 0,
+            lrc_t: 0,
+            qrc: 1,
+            qrc_t: 0,
+            roma: 1,
+            roma_t: 0,
+            singerName: "",
+            songID: 0,
+            songMID: songId,
+            songName: "",
+            trans: 1,
+            trans_t: 0,
+            type: 0,
+          },
+        ),
+        { headers: { referer: "https://y.qq.com/", ...this.directCookieHeaders } },
+      );
+
+      const data = res.data?.req_0?.data;
+      const lyric = safeDecryptQrc(data?.lyric);
+      if (!lyric) return null;
+
+      const lines = parseQqQrcLyrics(
+        lyric,
+        safeDecryptQrc(data?.trans),
+        safeDecryptQrc(data?.roma),
+      );
+      return lines.some((line) => line.words?.length) ? lines : null;
+    } catch {
+      return null;
+    }
   }
 
   async getQrCode(): Promise<QrCodeResult> {

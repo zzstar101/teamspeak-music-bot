@@ -25,10 +25,16 @@
           <div class="m-player-progress-thumb" :style="{ left: seekBarPct + '%' }" />
         </div>
       </div>
+      <div class="m-player-time-row">
+        <span class="m-player-time m-player-time-current">{{ mobileElapsedLabel }}</span>
+        <span class="m-player-time m-player-time-duration">{{ mobileDurationLabel }}</span>
+      </div>
       <CoverArt :url="currentSong.coverUrl" :size="40" :radius="8" />
       <div class="m-player-info">
         <div class="m-player-name">{{ currentSong.name }}</div>
-        <div class="m-player-artist">{{ currentSong.artist }}</div>
+        <div class="m-player-meta">
+          <span class="m-player-artist">{{ currentSong.artist }}</span>
+        </div>
       </div>
       <div class="m-player-controls" @click.stop>
         <button v-if="can('player.control')" class="m-player-btn" @click="playerStore.prev()">
@@ -139,12 +145,23 @@ const mobileModeIcons: Record<string, string> = {
 const mobileModeIcon = computed(() => mobileModeIcons[mobileMode.value] ?? mobileModeIcons.seq);
 const mobileVolumeOpen = ref(false);
 const mobileQueueOpen = ref(false);
+const mobileElapsedLabel = computed(() => formatMobileTime(playerStore.elapsed));
+const mobileDurationLabel = computed(() => formatMobileTime(currentSong.value?.duration ?? 0));
 
 const mobileProgressPct = ref(0);
 let syncTimer: ReturnType<typeof setInterval> | null = null;
 let mobileRaf: number | null = null;
 
+function formatMobileTime(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return '0:00';
+  const totalSeconds = Math.floor(seconds);
+  const mins = Math.floor(totalSeconds / 60);
+  const secs = totalSeconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
 function updateMobileProgress() {
+  playerStore.updateUiClock(Date.now());
   // While the finger owns the bar, the clock must keep its hands off it — see
   // seekBarPct below. Skipping the write (rather than letting it be overridden)
   // also avoids 60 pointless reactive re-renders per second mid-drag.
@@ -341,7 +358,8 @@ onMounted(async () => {
   // Non-critical: reads savedQueuesEnabled so the nav entry can show/hide.
   // Guests get a 403 (swallowed) → the entry stays hidden for them.
   if (!session.isGuest.value) playerStore.fetchBotSettings();
-  syncTimer = setInterval(() => playerStore.syncElapsed(), 3000);
+  // WebSocket 负责状态变化；这里仅做低频时间校准。
+  syncTimer = setInterval(() => playerStore.syncElapsed(), 15_000);
   mobileRaf = requestAnimationFrame(updateMobileProgress);
   // Reconcile the dedicated-link scope only after the bot list is known: the
   // router guard sets scopedBotId tentatively from ?bot, but applyScopeFromQuery
@@ -477,6 +495,15 @@ onUnmounted(() => {
   transform: scale(1);
 }
 
+.m-player-time-row {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: 5px;
+  display: flex;
+  justify-content: space-between;
+  pointer-events: none;
+}
 .m-player-info {
   flex: 1;
   min-width: 0;
@@ -497,12 +524,29 @@ onUnmounted(() => {
   text-overflow: ellipsis;
 }
 
+.m-player-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .m-player-artist {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 11px;
   color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.m-player-time {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  line-height: 1;
 }
 
 .m-player-btn {

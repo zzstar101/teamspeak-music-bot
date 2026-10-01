@@ -63,6 +63,14 @@ export interface LyricLine {
   time: number; // seconds
   text: string;
   translation?: string;
+  romanization?: string;
+  words?: LyricWord[];
+}
+
+export interface LyricWord {
+  start: number; // seconds
+  duration: number; // seconds
+  text: string;
 }
 
 export interface SearchResult {

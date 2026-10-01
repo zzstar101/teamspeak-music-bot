@@ -12,7 +12,12 @@ import type {
   Album,
 } from "./provider.js";
 
-export function parseLyrics(lrc: string, tlyric?: string): LyricLine[] {
+export function parseLyrics(
+  lrc: string,
+  tlyric?: string,
+  romalrc?: string,
+  yrc?: string,
+): LyricLine[] {
   if (!lrc) return [];
 
   const parseLine = (
@@ -32,12 +37,44 @@ export function parseLyrics(lrc: string, tlyric?: string): LyricLine[] {
 
   const lines: LyricLine[] = [];
   const translationMap = new Map<number, string>();
+  const romanizationMap = new Map<number, string>();
+  const wordMap = new Map<number, LyricLine["words"]>();
 
   if (tlyric) {
     for (const line of tlyric.split("\n")) {
       const parsed = parseLine(line);
       if (parsed) {
         translationMap.set(Math.round(parsed.time * 100), parsed.text);
+      }
+    }
+  }
+
+  if (romalrc) {
+    for (const line of romalrc.split("\n")) {
+      const parsed = parseLine(line);
+      if (parsed) {
+        romanizationMap.set(Math.round(parsed.time * 100), parsed.text);
+      }
+    }
+  }
+
+  if (yrc) {
+    for (const line of yrc.split("\n")) {
+      const lineMatch = line.match(/^\[(\d+),(\d+)\](.+)$/);
+      if (!lineMatch) continue;
+      const lineStart = Number(lineMatch[1]) / 1000;
+      const wordPart = lineMatch[3];
+      const words = Array.from(
+        wordPart.matchAll(/\((\d+),(\d+),\d+\)([^(]*)/g),
+      )
+        .map((match) => ({
+          start: Number(match[1]) / 1000,
+          duration: Number(match[2]) / 1000,
+          text: match[3],
+        }))
+        .filter((word) => word.text.length > 0);
+      if (words.length > 0) {
+        wordMap.set(Math.round(lineStart * 100), words);
       }
     }
   }
@@ -50,6 +87,8 @@ export function parseLyrics(lrc: string, tlyric?: string): LyricLine[] {
         time: parsed.time,
         text: parsed.text,
         translation: translationMap.get(timeKey),
+        romanization: romanizationMap.get(timeKey),
+        words: wordMap.get(timeKey),
       });
     }
   }
@@ -218,12 +257,14 @@ export class NeteaseProvider implements MusicProvider {
   }
 
   async getLyrics(songId: string): Promise<LyricLine[]> {
-    const res = await this.api.get("/lyric", {
+    const res = await this.api.get("/lyric/new", {
       params: { id: songId, ...this.cookieParams },
     });
     return parseLyrics(
       res.data?.lrc?.lyric ?? "",
-      res.data?.tlyric?.lyric
+      res.data?.tlyric?.lyric,
+      res.data?.romalrc?.lyric,
+      res.data?.yrc?.lyric,
     );
   }
 

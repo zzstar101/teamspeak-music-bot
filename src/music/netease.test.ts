@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect, vi } from "vitest";
 import { parseLyrics, mapNeteaseAlbums, mapNeteaseSongs, parseNeteaseTrial, NeteaseProvider } from "./netease.js";
 
@@ -27,6 +28,54 @@ describe("NetEase adapter", () => {
     const lines = parseLyrics(lrc, tlyric);
     expect(lines[0].text).toBe("Hello world");
     expect(lines[0].translation).toBe("你好世界");
+  });
+
+  it("merges romanized lyrics", () => {
+    const lrc = "[00:12.50]負けヒロインが";
+    const tlyric = "[00:12.50]败犬女主";
+    const romalrc = "[00:12.50]make heroine ga";
+    const lines = parseLyrics(lrc, tlyric, romalrc);
+    expect(lines[0].translation).toBe("败犬女主");
+    expect(lines[0].romanization).toBe("make heroine ga");
+  });
+
+  it("parses NetEase YRC word timing", () => {
+    const lrc = "[00:12.50]LOVE 2000";
+    const yrc = "[12500,2000](12500,500,0)LOVE(13000,1500,0) 2000";
+    const lines = parseLyrics(lrc, undefined, undefined, yrc);
+    expect(lines[0].words).toEqual([
+      { start: 12.5, duration: 0.5, text: "LOVE" },
+      { start: 13, duration: 1.5, text: " 2000" },
+    ]);
+  });
+
+  it("parses lyric/new mixed JSON metadata and YRC word timing", () => {
+    const lrc = `{"t":0,"c":[{"tx":"作词: "},{"tx":"方文山"}]}
+[00:13.67]冷咖啡离开了杯垫`;
+    const yrc = `{"t":0,"c":[{"tx":"作词: "},{"tx":"方文山"}]}
+[13670,3250](13670,220,0)冷(13890,350,0)咖(14240,490,0)啡`;
+    const lines = parseLyrics(lrc, undefined, undefined, yrc);
+
+    expect(lines).toEqual([
+      {
+        time: 13.67,
+        text: "冷咖啡离开了杯垫",
+        translation: undefined,
+        romanization: undefined,
+        words: [
+          { start: 13.67, duration: 0.22, text: "冷" },
+          { start: 13.89, duration: 0.35, text: "咖" },
+          { start: 14.24, duration: 0.49, text: "啡" },
+        ],
+      },
+    ]);
+  });
+
+  it("requests NetEase lyric/new so YRC data is available", () => {
+    const source = readFileSync(new URL("./netease.ts", import.meta.url), "utf8");
+
+    expect(source).toContain('this.api.get("/lyric/new"');
+    expect(source).not.toContain('this.api.get("/lyric",');
   });
 
   it("mapNeteaseAlbums maps raw cloudsearch albums to Album shape", () => {

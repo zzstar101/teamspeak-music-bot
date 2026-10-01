@@ -2,8 +2,7 @@
   <div class="player-wrapper" v-if="currentSong">
     <Queue :open="showQueue" @close="showQueue = false" />
 
-    <div class="player-bar frosted-glass">
-      <!-- Progress bar (read-only display; seek interaction gated on transport / canTransport) -->
+    <div class="player-bar">
       <div
         class="progress-bar-container"
         :class="{ 'no-seek': !canTransport }"
@@ -25,42 +24,43 @@
         </div>
       </div>
 
-      <div class="player-left" @click="toggleLyrics">
-        <CoverArt :url="currentSong.coverUrl" :size="40" />
+      <button class="player-left" type="button" @click="toggleLyrics" title="打开歌词">
+        <CoverArt :url="currentSong.coverUrl" :size="52" :radius="8" />
         <div class="song-info">
           <div class="song-name" :title="currentSong.name">{{ currentSong.name }}</div>
           <div class="song-artist">
             <span v-if="showBotBadge" class="bot-badge">{{ activeBot?.name }}</span>
             <span class="artist-name" :title="currentSong.artist">{{ currentSong.artist }}</span>
+            <span v-if="platformLabel" class="platform-label">{{ platformLabel }}</span>
           </div>
+        </div>
+      </button>
+
+      <div class="player-center">
+        <div class="transport-row">
+          <button v-if="canModeCtl" class="control-btn mode-btn" type="button" @click="cycleMode" :title="modeLabel">
+            <Icon :icon="modeIcon" />
+          </button>
+          <button v-if="canControl" class="control-btn" type="button" @click="store.prev()" title="上一首">
+            <Icon icon="mdi:skip-previous" />
+          </button>
+          <button v-if="canTransport" class="play-btn" type="button" @click="togglePlay" :title="store.isPlaying ? '暂停' : '播放'">
+            <Icon :icon="store.isPlaying ? 'mdi:pause' : 'mdi:play'" />
+          </button>
+          <button v-if="canSkip" class="control-btn" type="button" @click="store.next()" title="下一首">
+            <Icon icon="mdi:skip-next" />
+          </button>
+        </div>
+        <div class="time-row">
+          <span class="time-display">{{ formatTime(currentElapsed) }}</span>
+          <span class="time-divider">/</span>
+          <span class="time-display">{{ formatTime(currentSong?.duration ?? 0) }}</span>
         </div>
       </div>
 
-      <div class="player-center">
-        <span class="time-display time-current">{{ formatTime(currentElapsed) }}</span>
-        <!-- Transport controls: per-button gating honoring guest flags -->
-        <template v-if="canControl || canTransport || canSkip || canModeCtl">
-          <button v-if="canControl" class="control-btn" @click="store.prev()">
-            <Icon icon="mdi:skip-previous" />
-          </button>
-          <button v-if="canTransport" class="play-btn" @click="togglePlay">
-            <Icon :icon="store.isPlaying ? 'mdi:pause' : 'mdi:play'" />
-          </button>
-          <button v-if="canSkip" class="control-btn" @click="store.next()">
-            <Icon icon="mdi:skip-next" />
-          </button>
-          <button v-if="canModeCtl" class="control-btn mode-btn" @click="cycleMode" :title="modeLabel">
-            <Icon :icon="modeIcon" />
-            <span class="mode-label">{{ modeLabel }}</span>
-          </button>
-        </template>
-        <span class="time-display time-total">{{ formatTime(currentSong?.duration ?? 0) }}</span>
-      </div>
-
       <div class="player-right">
-        <!-- Volume gated on transport -->
-        <template v-if="canTransport">
-          <Icon icon="mdi:volume-high" class="volume-icon" />
+        <div v-if="canTransport" class="volume-control">
+          <Icon :icon="volumeIcon" class="volume-icon" />
           <input
             type="range"
             min="0"
@@ -72,12 +72,13 @@
             @pointercancel="onVolumeRelease"
             @blur="onVolumeRelease"
             class="volume-slider"
+            title="音量"
           />
-        </template>
-        <button class="control-btn" :class="{ active: showQueue }" @click="showQueue = !showQueue">
+        </div>
+        <button class="control-btn" type="button" :class="{ active: showQueue }" @click="showQueue = !showQueue" title="播放队列">
           <Icon icon="mdi:playlist-music" />
         </button>
-        <button class="control-btn lyrics-btn" :class="{ active: route.path === '/lyrics' }" @click="toggleLyrics">
+        <button class="control-btn" type="button" :class="{ active: route.path === '/lyrics' }" @click="toggleLyrics" title="歌词">
           <Icon icon="mdi:microphone" />
         </button>
       </div>
@@ -109,6 +110,22 @@ const store = usePlayerStore();
 const activeBot = computed(() => store.activeBot);
 const currentSong = computed(() => store.currentSong);
 const showBotBadge = computed(() => store.bots.length > 1);
+const platformLabels: Record<string, string> = {
+  netease: '网易云',
+  qq: 'QQ音乐',
+  bilibili: 'B站',
+  youtube: 'YouTube',
+};
+const platformLabel = computed(() => {
+  const platform = currentSong.value?.platform;
+  return platform ? platformLabels[platform] ?? platform : '';
+});
+const volumeIcon = computed(() => {
+  const volume = activeBot.value?.volume ?? 75;
+  if (volume <= 0) return 'mdi:volume-off';
+  if (volume < 40) return 'mdi:volume-low';
+  return 'mdi:volume-high';
+});
 
 function toggleLyrics() {
   if (route.path === '/lyrics') {
@@ -244,17 +261,22 @@ function cycleMode() {
   height: var(--player-height);
   display: flex;
   align-items: center;
-  padding: 0 24px;
-  border-top: 1px solid var(--border-color);
+  gap: 20px;
+  padding: 10px 28px;
+  background: color-mix(in srgb, var(--bg-navbar) 94%, #101010);
+  border-top: 1px solid color-mix(in srgb, var(--border-color) 70%, rgba(255, 255, 255, 0.12));
+  box-shadow: 0 -12px 32px rgba(0, 0, 0, 0.22);
+  backdrop-filter: saturate(160%) blur(18px);
+  -webkit-backdrop-filter: saturate(160%) blur(18px);
   position: relative;
 }
 
 .progress-bar-container {
   position: absolute;
-  top: -6px;
+  top: -7px;
   left: 0;
   right: 0;
-  height: 12px;
+  height: 14px;
   cursor: pointer;
   z-index: 101;
   display: flex;
@@ -262,7 +284,7 @@ function cycleMode() {
   padding: 0;
 
   &:hover {
-    .progress-bar-bg { height: 4px; }
+    .progress-bar-bg { height: 5px; }
     .progress-bar-thumb { opacity: 1; transform: scale(1); }
   }
 
@@ -277,11 +299,11 @@ function cycleMode() {
 
 .progress-bar-bg {
   width: 100%;
-  height: 2px;
-  background: var(--border-color);
+  height: 3px;
+  background: color-mix(in srgb, var(--border-color) 70%, var(--text-tertiary));
   transition: height 0.15s ease;
   position: relative;
-  border-radius: 1px;
+  border-radius: var(--radius-full);
 }
 
 .progress-bar-fill {
@@ -290,15 +312,14 @@ function cycleMode() {
   left: 0;
   height: 100%;
   background: var(--color-primary);
-  border-radius: 1px;
-  // No transition — updated via rAF for smooth movement
+  border-radius: var(--radius-full);
 }
 
 .progress-bar-thumb {
   position: absolute;
   top: 50%;
-  width: 10px;
-  height: 10px;
+  width: 12px;
+  height: 12px;
   background: var(--color-primary);
   border-radius: 50%;
   transform: scale(0);
@@ -310,7 +331,7 @@ function cycleMode() {
 
 .progress-tooltip {
   position: absolute;
-  top: -28px;
+  top: -30px;
   transform: translateX(-50%);
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
@@ -323,25 +344,35 @@ function cycleMode() {
 }
 
 .time-display {
-  font-size: 11px;
-  color: var(--text-tertiary);
+  font-size: var(--fs-2xs);
+  color: var(--text-secondary);
   font-variant-numeric: tabular-nums;
-  min-width: 36px;
+  min-width: 34px;
 }
 
-.time-current { text-align: right; }
-.time-total { text-align: left; }
+.time-divider {
+  color: var(--text-tertiary);
+  font-size: var(--fs-2xs);
+}
 
 .player-left {
   display: flex;
   align-items: center;
-  gap: 12px;
-  width: 240px;
+  gap: 14px;
+  width: min(34vw, 340px);
+  min-width: 240px;
+  height: 54px;
+  padding: 0;
   text-decoration: none;
   color: inherit;
   cursor: pointer;
-  transition: opacity var(--transition-fast);
-  &:hover { opacity: 0.8; }
+  text-align: left;
+  min-inline-size: 0;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+
+  &:hover {
+    opacity: 0.88;
+  }
 }
 
 .song-info {
@@ -351,19 +382,21 @@ function cycleMode() {
 }
 
 .song-name {
-  font-size: 13px;
-  font-weight: 500;
+  font-size: var(--fs-body);
+  font-weight: var(--fw-semi);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: var(--lh-tight);
 }
 
 .song-artist {
-  font-size: 11px;
+  margin-top: 5px;
+  font-size: var(--fs-2xs);
   color: var(--text-secondary);
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
   overflow: hidden;
 }
@@ -381,89 +414,169 @@ function cycleMode() {
   font-size: var(--fs-micro);
   font-weight: var(--fw-semi);
   padding: 0 5px;
-  background: var(--color-primary-15);
-  color: var(--color-primary);
+  background: var(--hover-bg);
+  color: var(--text-secondary);
   border-radius: var(--radius-xs);
   line-height: 16px;
   white-space: nowrap;
   flex-shrink: 0;
 }
 
+.platform-label {
+  flex: 0 0 auto;
+  font-size: var(--fs-micro);
+  color: var(--text-tertiary);
+  line-height: 16px;
+}
+
 .player-center {
   flex: 1;
   display: flex;
+  flex-direction: column;
   justify-content: center;
   align-items: center;
-  gap: 20px;
+  gap: 4px;
+  min-width: 260px;
+}
+
+.transport-row {
+  display: grid;
+  grid-template-columns: 40px 40px 48px 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 42px;
+}
+
+.time-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 16px;
 }
 
 .control-btn {
-  font-size: 20px;
-  opacity: 0.7;
-  transition: opacity var(--transition-fast);
-  &:hover { opacity: 1; }
-  &.active { opacity: 1; color: var(--color-primary); }
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  font-size: 21px;
+  color: var(--text-secondary);
+  opacity: 0.92;
+  transition: background var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
+
+  &:hover {
+    opacity: 1;
+    color: var(--text-primary);
+    background: var(--hover-bg);
+  }
+
+  &.active {
+    opacity: 1;
+    color: var(--color-primary);
+    background: var(--color-primary-10);
+  }
 }
 
 .mode-btn {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 18px;
-}
-
-.mode-label {
-  font-size: 11px;
-  font-weight: 500;
+  font-size: 19px;
 }
 
 .play-btn {
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
   background: var(--color-primary);
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 18px;
+  font-size: 24px;
   color: white;
-  transition: transform var(--transition-fast);
-  &:hover { transform: scale(1.08); }
+  box-shadow: 0 8px 18px var(--color-primary-15);
+  transition: transform var(--transition-fast), filter var(--transition-fast);
+
+  &:hover {
+    filter: brightness(1.08);
+    transform: scale(1.04);
+  }
+
   &:active { transform: scale(0.95); }
 }
 
 .player-right {
-  width: 240px;
+  width: min(32vw, 320px);
+  min-width: 236px;
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 10px;
+}
+
+.volume-control {
+  display: flex;
+  align-items: center;
   gap: 8px;
+  width: 150px;
 }
 
 .volume-icon {
   font-size: 18px;
-  opacity: 0.6;
+  color: var(--text-secondary);
+  flex: 0 0 auto;
 }
 
 .volume-slider {
-  width: 80px;
-  height: 3px;
+  width: 112px;
+  height: 4px;
   appearance: none;
-  background: var(--border-color);
-  border-radius: 2px;
+  background: color-mix(in srgb, var(--border-color) 80%, var(--text-tertiary));
+  border-radius: var(--radius-full);
   outline: none;
+  cursor: pointer;
 
   &::-webkit-slider-thumb {
     appearance: none;
-    width: 12px;
-    height: 12px;
+    width: 14px;
+    height: 14px;
+    background: var(--color-primary);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 0 0 3px var(--color-primary-15);
+  }
+
+  &::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    border: 0;
     background: var(--color-primary);
     border-radius: 50%;
     cursor: pointer;
   }
 }
 
-.lyrics-btn {
-  margin-left: 8px;
+@media (max-width: 1024px) {
+  .player-bar {
+    gap: 14px;
+    padding-inline: 18px;
+  }
+
+  .player-left {
+    min-width: 210px;
+  }
+
+  .player-right {
+    min-width: 180px;
+  }
+
+  .volume-control {
+    width: 116px;
+  }
+
+  .volume-slider {
+    width: 78px;
+  }
 }
 </style>

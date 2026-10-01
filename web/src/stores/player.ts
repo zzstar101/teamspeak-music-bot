@@ -84,6 +84,26 @@ export interface TimingState {
 
 const HOME_CACHE_TTL = 5 * 60 * 1000;
 
+export interface CalculateElapsedInput {
+  serverElapsed: number;
+  serverSyncTime: number;
+  wasPlaying: boolean;
+  paused: boolean;
+  duration: number;
+  now: number;
+}
+
+export function calculateElapsed(input: CalculateElapsedInput): number {
+  const maxDuration = input.duration > 0 ? input.duration : Infinity;
+  if (!input.wasPlaying || input.serverSyncTime === 0 || input.paused) {
+    return Math.min(input.serverElapsed, maxDuration);
+  }
+  return Math.min(
+    input.serverElapsed + (input.now - input.serverSyncTime) / 1000,
+    maxDuration,
+  );
+}
+
 function defaultTiming(): TimingState {
   return { serverElapsed: 0, serverSyncTime: 0, wasPlaying: false };
 }
@@ -126,6 +146,8 @@ export const usePlayerStore = defineStore('player', {
     queues: {} as Record<string, Song[]>,
     /** Per-bot timing state keyed by botId */
     timings: {} as Record<string, TimingState>,
+    /** 由 requestAnimationFrame 驱动的响应式前端时钟，用于平滑进度条。 */
+    uiNow: Date.now(),
     theme: 'dark' as 'dark' | 'light',
 
     // Which sources the server has enabled (GET /api/music/providers) and the
@@ -249,6 +271,10 @@ export const usePlayerStore = defineStore('player', {
     _setTiming(botId: string, partial: Partial<TimingState>) {
       const current = this._getTiming(botId);
       this.timings[botId] = { ...current, ...partial };
+    },
+
+    updateUiClock(now = Date.now()) {
+      this.uiNow = now;
     },
 
     getQueueForBot(botId: string): Song[] {

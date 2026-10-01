@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { itemKey, mergeDedup, hasMore, nextOffset, type Keyed } from "./searchPagination.js";
+import {
+  hasMore,
+  itemKey,
+  limitPerPlatform,
+  mergeDedup,
+  pageOffset,
+  pageSizeFor,
+  replacePlatformPage,
+  type Keyed,
+} from "./searchPagination.js";
 
 const item = (platform: string, id: string): Keyed & { label: string } => ({
   platform,
@@ -71,23 +80,42 @@ describe("searchPagination helpers (#115)", () => {
     });
   });
 
-  describe("nextOffset", () => {
-    it("returns the page-aligned offset for a full first page", () => {
-      expect(nextOffset(20, 20)).toBe(20);
+  describe("page sizing", () => {
+    it("uses 20 songs and 10 albums/playlists per page", () => {
+      expect(pageSizeFor("songs")).toBe(20);
+      expect(pageSizeFor("albums")).toBe(10);
+      expect(pageSizeFor("playlists")).toBe(10);
     });
 
-    it("returns 0 when nothing is shown yet", () => {
-      expect(nextOffset(0, 20)).toBe(0);
+    it("calculates offsets from the page number and result type", () => {
+      expect(pageOffset(1, "songs")).toBe(0);
+      expect(pageOffset(2, "songs")).toBe(20);
+      expect(pageOffset(3, "albums")).toBe(20);
+      expect(pageOffset(2, "playlists")).toBe(10);
+    });
+  });
+
+  describe("page result shaping", () => {
+    it("limits every platform independently", () => {
+      const items = [
+        ...Array.from({ length: 12 }, (_, i) => item("netease", String(i))),
+        ...Array.from({ length: 12 }, (_, i) => item("qq", String(i))),
+      ];
+
+      const limited = limitPerPlatform(items, 10);
+      expect(limited.filter((x) => x.platform === "netease")).toHaveLength(10);
+      expect(limited.filter((x) => x.platform === "qq")).toHaveLength(10);
     });
 
-    it("rounds up to the next page boundary after dedup drops items", () => {
-      // page1 (20) + page2 minus 5 dupes -> 35 shown, next page cursor is 40.
-      expect(nextOffset(35, 20)).toBe(40);
-    });
+    it("replaces only the selected platform page", () => {
+      const existing = [item("netease", "old"), item("qq", "keep")];
+      const incoming = [item("netease", "new-1"), item("netease", "new-2")];
 
-    it("stays aligned across multiple full pages", () => {
-      expect(nextOffset(40, 20)).toBe(40);
-      expect(nextOffset(60, 20)).toBe(60);
+      expect(replacePlatformPage(existing, "netease", incoming).map(itemKey)).toEqual([
+        "qq:keep",
+        "netease:new-1",
+        "netease:new-2",
+      ]);
     });
   });
 });

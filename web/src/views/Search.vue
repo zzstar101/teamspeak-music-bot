@@ -178,10 +178,23 @@
         />
       </section>
 
-      <div v-if="showLoadMore" class="load-more-wrap">
-        <button class="load-more-btn" :disabled="currentLoadingMore" @click="loadMore">
-          <Icon v-if="currentLoadingMore" icon="mdi:loading" class="spin" />
-          {{ currentLoadingMore ? '加载中...' : '加载更多' }}
+      <div v-if="showPagination" class="pagination">
+        <button
+          class="pagination-btn"
+          :disabled="currentPageLoading || currentPage <= 1"
+          @click="goToPage(currentPage - 1)"
+        >
+          <Icon icon="mdi:chevron-left" />
+          上一页
+        </button>
+        <span class="pagination-page">第 {{ currentPage }} 页</span>
+        <button
+          class="pagination-btn"
+          :disabled="currentPageLoading || !currentHasMore"
+          @click="goToPage(currentPage + 1)"
+        >
+          下一页
+          <Icon icon="mdi:chevron-right" />
         </button>
       </div>
     </template>
@@ -199,9 +212,14 @@ import { usePlayerStore } from '../stores/player.js';
 import type { Song } from '../stores/player.js';
 import SongCard from '../components/SongCard.vue';
 import CoverArt from '../components/CoverArt.vue';
-import { mergeDedup, hasMore, nextOffset } from './searchPagination.js';
-
-const PAGE_SIZE = 20;
+import {
+  hasMore,
+  limitPerPlatform,
+  pageOffset,
+  pageSizeFor,
+  replacePlatformPage,
+  type SearchResultType,
+} from './searchPagination.js';
 
 const store = usePlayerStore();
 const route = useRoute();
@@ -221,7 +239,7 @@ function loadSource(): SearchSource {
   return 'netease';
 }
 
-type TabType = 'songs' | 'albums' | 'playlists';
+type TabType = SearchResultType;
 
 const query = ref((route.query.q as string) || '');
 const activeTab = ref<TabType>('songs');
@@ -233,9 +251,10 @@ interface Playlist { id: string; name: string; coverUrl: string; songCount?: num
 const allSongs = ref<Song[]>([]);
 const allAlbums = ref<Album[]>([]);
 const allPlaylists = ref<Playlist[]>([]);
-// "加载更多" 分页状态：hasMore 按 (类型, 音源) 记录，loadingMore 按类型记录。
+// 分页状态按“结果类型 + 音源”隔离，切换页签或音源时不会串页。
 const hasMoreMap = ref<Record<string, boolean>>({});
-const loadingMore = ref<Record<TabType, boolean>>({ songs: false, albums: false, playlists: false });
+const pageMap = ref<Record<string, number>>({});
+const pageLoading = ref<Record<TabType, boolean>>({ songs: false, albums: false, playlists: false });
 const loading = ref(false);
 const searched = ref(false);
 const uploading = ref(false);
@@ -275,7 +294,7 @@ function fixupSelectedSource() {
     : SEARCH_SOURCES.find((s) => s !== 'local' && sourceEnabled(s)) ?? 'netease';
 }
 
-// ---- 分页 / 加载更多 ----
+// ---- 分页 ----
 function pageKey(type: TabType, source: string): string {
   return `${type}:${source}`;
 }
@@ -286,67 +305,94 @@ const currentItems = computed(() => {
   return filteredSongs.value;
 });
 
-const currentLoadingMore = computed(() => loadingMore.value[activeTab.value]);
+const currentPageLoading = computed(() => pageLoading.value[activeTab.value]);
 
 const currentHasMore = computed(
   () => hasMoreMap.value[pageKey(activeTab.value, selectedSource.value)] ?? false
 );
 
-// 有结果、还有下一页时才显示按钮；加载中时按钮保留但禁用并显示 spinner。
-const showLoadMore = computed(() => currentItems.value.length > 0 && currentHasMore.value);
+const currentPage = computed(
+  () => pageMap.value[pageKey(activeTab.value, selectedSource.value)] ?? 1
+);
+
+const showPagination = computed(
+  () => currentPage.value > 1 || (currentItems.value.length > 0 && currentHasMore.value)
+);
 
 function resetPagination() {
   hasMoreMap.value = {};
-  loadingMore.value = { songs: false, albums: false, playlists: false };
+  pageMap.value = {};
+  pageLoading.value = { songs: false, albums: false, playlists: false };
 }
 
-// 记录某个 (类型, 音源) 是否还有更多：返回条数 === PAGE_SIZE 视为还有下一页。
 function setHasMore(type: TabType, source: string, returnedCount: number) {
   hasMoreMap.value = {
     ...hasMoreMap.value,
-    [pageKey(type, source)]: hasMore(returnedCount, PAGE_SIZE),
+    [pageKey(type, source)]: hasMore(returnedCount, pageSizeFor(type)),
   };
 }
 
-// 初始 /search/all 返回的是各音源合并的首页，按音源分组统计每种类型的条数。
-function recordInitialHasMore(items: { platform: string }[], type: TabType) {
+// 聚合搜索返回多个音源的首页，这里记录每个音源的分页状态并截取显示数量。
+function prepareInitialPage<T extends { id: string; platform: string }>(items: T[], type: TabType): T[] {
   const counts: Record<string, number> = {};
   for (const it of items) counts[it.platform] = (counts[it.platform] ?? 0) + 1;
-  const next = { ...hasMoreMap.value };
+  const nextHasMore = { ...hasMoreMap.value };
+  const nextPages = { ...pageMap.value };
   for (const [source, count] of Object.entries(counts)) {
-    next[pageKey(type, source)] = hasMore(count, PAGE_SIZE);
+    const key = pageKey(type, source);
+    nextHasMore[key] = hasMore(count, pageSizeFor(type));
+    nextPages[key] = 1;
   }
-  hasMoreMap.value = next;
+  hasMoreMap.value = nextHasMore;
+  pageMap.value = nextPages;
+  return limitPerPlatform(items, pageSizeFor(type));
 }
 
-async function loadMore() {
+async function goToPage(page: number) {
   const type = activeTab.value;
   const source = selectedSource.value;
-  if (loadingMore.value[type]) return;
-  if (!currentHasMore.value) return;
-  const offset = nextOffset(currentItems.value.length, PAGE_SIZE);
-  loadingMore.value = { ...loadingMore.value, [type]: true };
+  if (page < 1) return;
+  if (pageLoading.value[type]) return;
+  if (page > currentPage.value && !currentHasMore.value) return;
+  const pageSize = pageSizeFor(type);
+  const offset = pageOffset(page, type);
+  pageLoading.value = { ...pageLoading.value, [type]: true };
   try {
     const res = await axios.get('/api/music/search', {
-      params: { q: query.value, platform: source, limit: PAGE_SIZE, offset },
+      params: { q: query.value, platform: source, limit: pageSize, offset },
     });
+    let returnedCount = 0;
     if (type === 'albums') {
-      const incoming = (res.data.albums ?? []) as Album[];
-      allAlbums.value = mergeDedup(allAlbums.value, incoming);
-      setHasMore(type, source, incoming.length);
+      const incoming = ((res.data.albums ?? []) as Album[]).slice(0, pageSize);
+      returnedCount = incoming.length;
+      if (page > 1 && returnedCount === 0) {
+        setHasMore(type, source, 0);
+        return;
+      }
+      allAlbums.value = replacePlatformPage(allAlbums.value, source, incoming);
     } else if (type === 'playlists') {
-      const incoming = (res.data.playlists ?? []) as Playlist[];
-      allPlaylists.value = mergeDedup(allPlaylists.value, incoming);
-      setHasMore(type, source, incoming.length);
+      const incoming = ((res.data.playlists ?? []) as Playlist[]).slice(0, pageSize);
+      returnedCount = incoming.length;
+      if (page > 1 && returnedCount === 0) {
+        setHasMore(type, source, 0);
+        return;
+      }
+      allPlaylists.value = replacePlatformPage(allPlaylists.value, source, incoming);
     } else {
-      const incoming = (res.data.songs ?? []) as Song[];
-      allSongs.value = mergeDedup(allSongs.value, incoming);
-      setHasMore(type, source, incoming.length);
+      const incoming = ((res.data.songs ?? []) as Song[]).slice(0, pageSize);
+      returnedCount = incoming.length;
+      if (page > 1 && returnedCount === 0) {
+        setHasMore(type, source, 0);
+        return;
+      }
+      allSongs.value = replacePlatformPage(allSongs.value, source, incoming);
     }
+    pageMap.value = { ...pageMap.value, [pageKey(type, source)]: page };
+    setHasMore(type, source, returnedCount);
   } catch {
-    // 保留 hasMore 现状，允许用户重试。
+    // 保留当前页，用户可以重试。
   } finally {
-    loadingMore.value = { ...loadingMore.value, [type]: false };
+    pageLoading.value = { ...pageLoading.value, [type]: false };
   }
 }
 
@@ -390,12 +436,9 @@ async function doSearch() {
   router.replace({ query: { q: query.value } });
   try {
     const res = await axios.get('/api/music/search/all', { params: { q: query.value } });
-    allSongs.value = res.data.songs ?? [];
-    allAlbums.value = res.data.albums ?? [];
-    allPlaylists.value = res.data.playlists ?? [];
-    recordInitialHasMore(allSongs.value, 'songs');
-    recordInitialHasMore(allAlbums.value, 'albums');
-    recordInitialHasMore(allPlaylists.value, 'playlists');
+    allSongs.value = prepareInitialPage(res.data.songs ?? [], 'songs');
+    allAlbums.value = prepareInitialPage(res.data.albums ?? [], 'albums');
+    allPlaylists.value = prepareInitialPage(res.data.playlists ?? [], 'playlists');
   } catch {
     allSongs.value = []; allAlbums.value = []; allPlaylists.value = [];
   } finally {
@@ -767,17 +810,21 @@ onMounted(async () => {
   margin-bottom: 32px;
 }
 
-.load-more-wrap {
+.pagination {
   display: flex;
+  align-items: center;
   justify-content: center;
+  gap: 12px;
   margin: 8px 0 32px;
 }
 
-.load-more-btn {
+.pagination-btn {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 9px 28px;
+  min-width: 96px;
+  justify-content: center;
+  padding: 9px 16px;
   border-radius: var(--radius-md);
   font-size: 14px;
   font-family: inherit;
@@ -797,13 +844,13 @@ onMounted(async () => {
     opacity: 0.7;
   }
 
-  .spin {
-    animation: load-more-spin 0.8s linear infinite;
-  }
 }
 
-@keyframes load-more-spin {
-  to { transform: rotate(360deg); }
+.pagination-page {
+  min-width: 64px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 13px;
 }
 .card-grid {
   display: grid;

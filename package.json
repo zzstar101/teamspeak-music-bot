@@ -35,6 +35,7 @@
     "koa-static": "^5.0.0",
     "NeteaseCloudMusicApi": "~4.32.0",
     "pino": "^10.3.1",
+    "qrc-decoder": "^1.0.2",
     "ts3-nodejs-library": "^3.5.1",
     "tweetnacl": "^1.0.3",
     "ws": "^8.20.0",

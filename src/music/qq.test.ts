@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // All axios.create(...) instances in qq.ts (qqMusicuApi / qqSearchApi / qqFavApi
@@ -8,7 +9,7 @@ vi.mock("axios", () => ({
   default: { create: () => ({ get: mockGet, post: mockPost }) },
 }));
 
-import { mapQqAlbums, mapQqSongs, parseQqTrial, QQMusicProvider } from "./qq.js";
+import { mapQqAlbums, mapQqSongs, parseQqQrcLyrics, parseQqTrial, QQMusicProvider } from "./qq.js";
 
 describe("QQ adapter", () => {
   it("mapQqSongs maps QQMusicApi-style song entries", () => {
@@ -99,6 +100,48 @@ describe("QQ adapter", () => {
     const out = mapQqAlbums(raw);
     expect(out[0].coverUrl).toBe("https://x/p.jpg");
     expect(out[0].id).toBe("");
+  });
+
+  it("parses QQ QRC XML word timing lyrics", () => {
+    const qrc = `<?xml version="1.0" encoding="utf-8"?>
+<QrcInfos>
+<LyricInfo LyricCount="1">
+<Lyric_1 LyricType="1" LyricContent="[ti:七里香]
+[27745,6753]窗(27745,401)外(28146,927)的(29073,370)麻(29443,174)雀(29617,1504)在(31121,417)电(31538,367)线(31905,432)杆(32337,400)上(32737,208)多(32945,422)嘴(33367,651)
+"/>
+</LyricInfo>
+</QrcInfos>`;
+
+    expect(parseQqQrcLyrics(qrc)).toEqual([
+      {
+        time: 27.745,
+        text: "窗外的麻雀在电线杆上多嘴",
+        translation: undefined,
+        romanization: undefined,
+        words: [
+          { start: 27.745, duration: 0.401, text: "窗" },
+          { start: 28.146, duration: 0.927, text: "外" },
+          { start: 29.073, duration: 0.37, text: "的" },
+          { start: 29.443, duration: 0.174, text: "麻" },
+          { start: 29.617, duration: 1.504, text: "雀" },
+          { start: 31.121, duration: 0.417, text: "在" },
+          { start: 31.538, duration: 0.367, text: "电" },
+          { start: 31.905, duration: 0.432, text: "线" },
+          { start: 32.337, duration: 0.4, text: "杆" },
+          { start: 32.737, duration: 0.208, text: "上" },
+          { start: 32.945, duration: 0.422, text: "多" },
+          { start: 33.367, duration: 0.651, text: "嘴" },
+        ],
+      },
+    ]);
+  });
+
+  it("uses QQ PlayLyricInfo encrypted QRC path before falling back to wrapper lyrics", () => {
+    const source = readFileSync(new URL("./qq.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("GetPlayLyricInfo");
+    expect(source).toContain("decryptQrc");
+    expect(source).toContain("parseQqQrcLyrics");
   });
 });
 
