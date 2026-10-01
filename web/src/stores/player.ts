@@ -610,18 +610,17 @@ export const usePlayerStore = defineStore('player', {
     },
 
     /**
-     * Queue an artist's songs. `all` = true asks the server for the singer's
-     * whole catalogue (the 全部歌曲 section's 播放全部 button) instead of the hot
-     * 50; that costs the server a few upstream round trips, so the caller gets a
-     * "loading" notice first.
+     * Queue an artist's songs. The server always loads the singer's FULL
+     * catalogue (never just the hot 50), which costs it a few upstream round
+     * trips, so the caller gets a "loading" notice first.
      */
-    async playArtist(artistId: string, platform = 'netease', all = false) {
+    async playArtist(artistId: string, platform = 'netease') {
       if (!this.activeBotId) return;
-      if (all) this.notify('正在载入该歌手的全部歌曲…', 'info');
+      this.notify('正在载入该歌手的全部歌曲…', 'info');
       try {
         const res = await axios.post(
           `/api/player/${this.activeBotId}/play-artist`,
-          all ? { artistId, platform, all: true } : { artistId, platform },
+          { artistId, platform },
         );
         if (res.data?.message) {
           this.notify(res.data.message, res.data.ok === false ? 'error' : 'info');
@@ -634,7 +633,7 @@ export const usePlayerStore = defineStore('player', {
           status === 403
             ? '没有权限播放整个歌手'
             : status === 501
-              ? '该音源不支持播放全部歌曲'
+              ? '该音源不支持播放歌手歌曲'
               : '播放歌手失败',
           'error',
         );

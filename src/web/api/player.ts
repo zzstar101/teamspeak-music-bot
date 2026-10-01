@@ -495,12 +495,14 @@ export function createPlayerRouter(
     }
   });
 
-  // Play an artist's songs — mirrors play-album but calls getArtistSongs, which
-  // every artist-capable provider exposes as "this singer's hot songs".
+  // Play an artist's songs. An artist page queues the singer's FULL catalogue —
+  // never just the hot 50 — so this pages through getArtistAllSongs when the
+  // source can page a catalogue, and falls back to getArtistSongs (hot songs)
+  // when it cannot.
   router.post("/:botId/play-artist", authorize({ capability: "player.control", guestFlag: "playCollection" }), async (req, res) => {
     try {
       const bot = (req as any).bot;
-      const { artistId, platform, all } = req.body;
+      const { artistId, platform } = req.body;
       if (!artistId) {
         res.status(400).json({ error: "artistId is required" });
         return;
@@ -518,24 +520,17 @@ export function createPlayerRouter(
         res.status(501).json({ error: "Not supported by this provider" });
         return;
       }
-      // `all: true` — the "播放全部" button in the artist page's 全部歌曲 section —
-      // queues the whole catalogue instead of the hot 50. A source that cannot
-      // page a catalogue is rejected rather than silently downgraded to 50.
-      const wantAll = all === true;
+      // Whole catalogue when the source can page it (bounded by the collector's
+      // safety cap); otherwise the hot songs are the best it can offer.
       const fetchPage = provider.getArtistAllSongs?.bind(provider);
-      if (wantAll && !fetchPage) {
-        res.status(501).json({ error: "Not supported by this provider" });
-        return;
-      }
 
       // Stop current playback
       bot.getPlayer().stop();
       bot.getPlayer().resetFailures();
 
-      const songs =
-        wantAll && fetchPage
-          ? await collectArtistSongs(fetchPage, artistId)
-          : await provider.getArtistSongs(artistId, 50);
+      const songs = fetchPage
+        ? await collectArtistSongs(fetchPage, artistId)
+        : await provider.getArtistSongs(artistId, 50);
       if (songs.length === 0) {
         res.json({ ok: false, message: "该歌手暂无可用歌曲" });
         return;

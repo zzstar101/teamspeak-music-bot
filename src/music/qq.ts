@@ -707,34 +707,51 @@ export class QQMusicProvider implements MusicProvider {
 
     for (const song of await this.getArtistSongs(artistId, 50)) push(song);
 
+    // null = the album search could not be enumerated (transient upstream
+    // failure). The hot list is still returned, but such a degraded catalogue
+    // must NOT be cached: a 10-minute cache would silently turn "play the whole
+    // singer" into "play the hot 50".
     const albumIds = await this.fetchArtistAlbumIds(artistId);
-    for (let i = 0; i < albumIds.length; i += ARTIST_ALBUM_CONCURRENCY) {
+    let albumFetchFailed = false;
+    for (let i = 0; albumIds && i < albumIds.length; i += ARTIST_ALBUM_CONCURRENCY) {
       const batch = albumIds.slice(i, i + ARTIST_ALBUM_CONCURRENCY);
       const lists = await Promise.all(
-        batch.map((mid) => this.getAlbumSongs(mid).catch(() => [] as Song[]))
+        batch.map((mid) =>
+          this.getAlbumSongs(mid).catch(() => {
+            albumFetchFailed = true;
+            return [] as Song[];
+          })
+        )
       );
       for (const list of lists) {
         for (const song of list) push(song);
       }
     }
 
-    if (this.artistCatalog.size >= ARTIST_CATALOG_MAX_ENTRIES) {
-      const oldest = this.artistCatalog.keys().next().value;
-      if (oldest !== undefined) this.artistCatalog.delete(oldest);
+    if (albumIds !== null && !albumFetchFailed) {
+      if (this.artistCatalog.size >= ARTIST_CATALOG_MAX_ENTRIES) {
+        const oldest = this.artistCatalog.keys().next().value;
+        if (oldest !== undefined) this.artistCatalog.delete(oldest);
+      }
+      this.artistCatalog.set(artistId, { at: Date.now(), songs: merged });
     }
-    this.artistCatalog.set(artistId, { at: Date.now(), songs: merged });
     return merged;
   }
 
-  /** Every album MID the singer owns, via paged album search (see getArtistAlbums). */
-  private async fetchArtistAlbumIds(artistId: string): Promise<string[]> {
+  /** Every album MID the singer owns, via paged album search (see getArtistAlbums).
+   *  null = the search failed, so the album list is unknown (not empty). */
+  private async fetchArtistAlbumIds(artistId: string): Promise<string[] | null> {
     const detail = await this.fetchSingerDetail(artistId, 1);
     const name = detail?.singer_info?.name;
     if (!name) return [];
     const ids: string[] = [];
     const seen = new Set<string>();
     for (let page = 1; page <= ARTIST_ALBUM_MAX_PAGES; page++) {
-      const list = await this.searchArtistAlbums(name, page, 50);
+      // One immediate retry absorbs a transient upstream hiccup, which would
+      // otherwise look exactly like "this singer has no albums".
+      const list =
+        (await this.searchArtistAlbums(name, page, 50)) ?? (await this.searchArtistAlbums(name, page, 50));
+      if (list === null) return null;
       if (list.length === 0) break;
       let added = 0;
       for (const entry of list) {
@@ -753,12 +770,12 @@ export class QQMusicProvider implements MusicProvider {
     return ids.slice(0, ARTIST_ALBUM_MAX);
   }
 
-  /** search_type=2 album search for a singer name — raw entries, [] on failure. */
+  /** search_type=2 album search for a singer name — raw entries, null on failure. */
   private async searchArtistAlbums(
     name: string,
     pageNum: number,
     numPerPage: number
-  ): Promise<any[]> {
+  ): Promise<any[] | null> {
     try {
       const reqData = JSON.stringify({
         req_album: {
@@ -777,7 +794,7 @@ export class QQMusicProvider implements MusicProvider {
       });
       return res.data?.req_album?.data?.body?.album?.list ?? [];
     } catch {
-      return [];
+      return null;
     }
   }
 
@@ -790,7 +807,7 @@ export class QQMusicProvider implements MusicProvider {
     const detail = await this.fetchSingerDetail(artistId, 1);
     const name = detail?.singer_info?.name;
     if (!name) return [];
-    const list = await this.searchArtistAlbums(name, 1, limit);
+    const list = (await this.searchArtistAlbums(name, 1, limit)) ?? [];
     const mine = list.filter((a: any) => isArtistAlbum(a, artistId));
     return mapQqAlbums(mine).slice(0, limit);
   }
