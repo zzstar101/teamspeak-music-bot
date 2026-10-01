@@ -10,6 +10,8 @@ import type {
   QrCodeResult,
   AuthStatus,
   Album,
+  Artist,
+  ArtistDetail,
 } from "./provider.js";
 
 export function parseLyrics(
@@ -108,6 +110,21 @@ export function mapNeteaseAlbums(raw: any[] | null | undefined): Album[] {
   }));
 }
 
+export function mapNeteaseArtists(raw: any[] | null | undefined): Artist[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((a: any) => ({
+    id: String(a.id),
+    name: a.name ?? "",
+    avatarUrl: a.picUrl ?? a.img1v1Url ?? "",
+    aliases: (a.alias ?? a.alia ?? []).filter(
+      (x: unknown): x is string => typeof x === "string" && x.length > 0
+    ),
+    songCount: a.musicSize ?? undefined,
+    albumCount: a.albumSize ?? undefined,
+    platform: "netease",
+  }));
+}
+
 export function mapNeteaseSongs(raw: any[] | null | undefined): Song[] {
   if (!Array.isArray(raw)) return [];
   return raw.map((s: any) => ({
@@ -176,7 +193,7 @@ export class NeteaseProvider implements MusicProvider {
     // /cloudsearch supports offset for every type. Songs, playlists (type 1000)
     // and albums (type 10) are all limit/offset-driven so the web can page past
     // the first page (playlists/albums were previously hardcoded to limit: 10).
-    const [songRes, playlistRes, albumRes] = await Promise.all([
+    const [songRes, playlistRes, albumRes, artistRes] = await Promise.all([
       this.api.get("/cloudsearch", {
         params: { keywords: query, type: 1, limit, offset, ...this.cookieParams },
       }),
@@ -191,6 +208,9 @@ export class NeteaseProvider implements MusicProvider {
       }),
       this.api.get("/cloudsearch", {
         params: { keywords: query, type: 10, limit, offset, ...this.cookieParams },
+      }),
+      this.api.get("/cloudsearch", {
+        params: { keywords: query, type: 100, limit, offset, ...this.cookieParams },
       }),
     ]);
 
@@ -208,7 +228,9 @@ export class NeteaseProvider implements MusicProvider {
 
     const albums = mapNeteaseAlbums(albumRes.data?.result?.albums);
 
-    return { songs, playlists, albums };
+    const artists = mapNeteaseArtists(artistRes.data?.result?.artists);
+
+    return { songs, playlists, albums, artists };
   }
 
   async getSongUrl(songId: string, quality?: string): Promise<SongUrlResult | null> {
@@ -254,6 +276,41 @@ export class NeteaseProvider implements MusicProvider {
       params: { id: albumId, ...this.cookieParams },
     });
     return mapNeteaseSongs(res.data?.songs);
+  }
+
+  async getArtistDetail(artistId: string): Promise<ArtistDetail | null> {
+    // /artists returns { artist, hotSongs }; the hot songs are fetched
+    // separately via /artist/songs (order=hot) so the artist page's three
+    // upstream calls stay independent of each other.
+    const res = await this.api.get("/artists", {
+      params: { id: artistId, ...this.cookieParams },
+    });
+    const a = res.data?.artist;
+    if (!a) return null;
+    return {
+      ...mapNeteaseArtists([a])[0],
+      description: a.briefDesc ?? "",
+    };
+  }
+
+  async getArtistSongs(artistId: string, limit = 50): Promise<Song[]> {
+    const res = await this.api.get("/artist/songs", {
+      params: {
+        id: artistId,
+        limit,
+        offset: 0,
+        order: "hot",
+        ...this.cookieParams,
+      },
+    });
+    return mapNeteaseSongs(res.data?.songs);
+  }
+
+  async getArtistAlbums(artistId: string, limit = 20): Promise<Album[]> {
+    const res = await this.api.get("/artist/album", {
+      params: { id: artistId, limit, offset: 0, ...this.cookieParams },
+    });
+    return mapNeteaseAlbums(res.data?.hotAlbums);
   }
 
   async getLyrics(songId: string): Promise<LyricLine[]> {

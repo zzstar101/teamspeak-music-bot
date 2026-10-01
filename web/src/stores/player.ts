@@ -609,6 +609,20 @@ export const usePlayerStore = defineStore('player', {
       }
     },
 
+    async playArtist(artistId: string, platform = 'netease') {
+      if (!this.activeBotId) return;
+      try {
+        const res = await axios.post(`/api/player/${this.activeBotId}/play-artist`, { artistId, platform });
+        if (res.data?.message) {
+          this.notify(res.data.message, res.data.ok === false ? 'error' : 'info');
+        }
+        this._setTiming(this.activeBotId, { serverElapsed: 0 });
+        this._syncAfterAction();
+      } catch (e: any) {
+        this.notify(e?.response?.status === 403 ? '没有权限播放整个歌手' : '播放歌手失败', 'error');
+      }
+    },
+
     async pause() {
       if (!this.activeBotId) return;
       // Freeze elapsed at the current LIVE interpolated value. Using the cached

@@ -1,6 +1,13 @@
 import { readFileSync } from "node:fs";
 import { describe, it, expect, vi } from "vitest";
-import { parseLyrics, mapNeteaseAlbums, mapNeteaseSongs, parseNeteaseTrial, NeteaseProvider } from "./netease.js";
+import {
+  parseLyrics,
+  mapNeteaseAlbums,
+  mapNeteaseSongs,
+  mapNeteaseArtists,
+  parseNeteaseTrial,
+  NeteaseProvider,
+} from "./netease.js";
 
 describe("NetEase adapter", () => {
   it("parses LRC format lyrics", () => {
@@ -186,6 +193,75 @@ describe("NeteaseProvider.search pagination", () => {
     expect(callByType(get, 1).offset).toBe(0);
     expect(callByType(get, 1000).offset).toBe(0);
     expect(callByType(get, 10).offset).toBe(0);
+  });
+
+  it("requests artists (type=100) and returns them alongside songs/albums/playlists", async () => {
+    const p = new NeteaseProvider("http://x");
+    const get = vi.fn(async (_path: string, cfg: any) => ({
+      data:
+        cfg.params.type === 100
+          ? { result: { artists: [{ id: 6452, name: "Adele", picUrl: "http://p/1.jpg", musicSize: 120 }] } }
+          : { result: { songs: [], playlists: [], albums: [] } },
+    }));
+    (p as any).api = { get };
+
+    const res = await p.search("adele", 20, 0);
+
+    expect(callByType(get, 100).limit).toBe(20);
+    expect(callByType(get, 100).offset).toBe(0);
+    expect(res.artists).toEqual([
+      {
+        id: "6452",
+        name: "Adele",
+        avatarUrl: "http://p/1.jpg",
+        aliases: [],
+        songCount: 120,
+        albumCount: undefined,
+        platform: "netease",
+      },
+    ]);
+  });
+});
+
+describe("mapNeteaseArtists (artist search + detail)", () => {
+  it("maps cloudsearch type=100 artist entries", () => {
+    const out = mapNeteaseArtists([
+      {
+        id: 6452,
+        name: "Adele",
+        picUrl: "http://p/1.jpg",
+        alias: ["阿黛尔"],
+        musicSize: 120,
+        albumSize: 9,
+      },
+    ]);
+    expect(out).toEqual([
+      {
+        id: "6452",
+        name: "Adele",
+        avatarUrl: "http://p/1.jpg",
+        aliases: ["阿黛尔"],
+        songCount: 120,
+        albumCount: 9,
+        platform: "netease",
+      },
+    ]);
+  });
+
+  it("falls back to img1v1Url/alia and drops non-string or empty aliases", () => {
+    const out = mapNeteaseArtists([
+      { id: 1, name: "X", img1v1Url: "http://p/2.jpg", alia: ["a", "", null, 3] },
+    ]);
+    expect(out[0].avatarUrl).toBe("http://p/2.jpg");
+    expect(out[0].aliases).toEqual(["a"]);
+    expect(out[0].songCount).toBeUndefined();
+    expect(out[0].albumCount).toBeUndefined();
+  });
+
+  it("returns [] for empty/null input", () => {
+    expect(mapNeteaseArtists([])).toEqual([]);
+    expect(mapNeteaseArtists(null as any)).toEqual([]);
+    expect(mapNeteaseArtists(undefined as any)).toEqual([]);
   });
 });
 

@@ -9,7 +9,14 @@ vi.mock("axios", () => ({
   default: { create: () => ({ get: mockGet, post: mockPost }) },
 }));
 
-import { mapQqAlbums, mapQqSongs, parseQqQrcLyrics, parseQqTrial, QQMusicProvider } from "./qq.js";
+import {
+  mapQqAlbums,
+  mapQqSongs,
+  mapQqArtists,
+  parseQqQrcLyrics,
+  parseQqTrial,
+  QQMusicProvider,
+} from "./qq.js";
 
 describe("QQ adapter", () => {
   it("mapQqSongs maps QQMusicApi-style song entries", () => {
@@ -213,5 +220,96 @@ describe("QQMusicProvider.search pagination", () => {
     );
     expect(songCall, "expected a client_search_cp song call").toBeTruthy();
     expect(songCall![1].params.p).toBe(2);
+  });
+
+  it("adds the singer sub-request (search_type 1) to the same musicu batch", async () => {
+    musicuOk();
+    const p = new QQMusicProvider("http://x");
+    await p.search("周杰伦", 20, 0);
+
+    const d = musicuReqData();
+    expect(d.req_artist.param.search_type).toBe(1);
+    expect(d.req_artist.param.num_per_page).toBe(20);
+    expect(d.req_artist.param.page_num).toBe(1);
+  });
+
+  it("returns singers even when the song list is empty (no client_search_cp fallback)", async () => {
+    mockGet.mockImplementation(async (url: string) => {
+      if (url === "/cgi-bin/musicu.fcg") {
+        return {
+          data: {
+            req_0: { data: { body: { song: { list: [] } } } },
+            req_album: { data: { body: { album: { list: [] } } } },
+            req_playlist: { data: { body: { songlist: { list: [] } } } },
+            req_artist: {
+              data: { body: { singer: { list: [{ singerMID: "m1", singerName: "Adele", songNum: 88 }] } } },
+            },
+          },
+        };
+      }
+      return { data: {} };
+    });
+    const p = new QQMusicProvider("http://x");
+    const res = await p.search("Adele", 20, 0);
+
+    expect(res.songs).toEqual([]);
+    expect(res.artists).toEqual([
+      {
+        id: "m1",
+        name: "Adele",
+        avatarUrl: "https://y.gtimg.cn/music/photo_new/T001R500x500M000m1.jpg",
+        songCount: 88,
+        albumCount: undefined,
+        platform: "qq",
+      },
+    ]);
+    expect(mockGet.mock.calls.some((c: any[]) => c[0] === "/soso/fcgi-bin/client_search_cp")).toBe(false);
+  });
+});
+
+describe("mapQqArtists (singer search + detail)", () => {
+  it("maps singer list entries and builds the 500px portrait from the MID", () => {
+    const out = mapQqArtists([
+      {
+        singerMID: "abc",
+        singerName: "周杰伦",
+        singerPic: "http://y.gtimg.cn/music/photo_new/T001R150x150M000abc_11.jpg",
+        songNum: 500,
+        albumNum: 30,
+      },
+    ]);
+    expect(out).toEqual([
+      {
+        id: "abc",
+        name: "周杰伦",
+        avatarUrl: "https://y.gtimg.cn/music/photo_new/T001R500x500M000abc.jpg",
+        songCount: 500,
+        albumCount: 30,
+        platform: "qq",
+      },
+    ]);
+  });
+
+  it("falls back to the given picture when no MID is present", () => {
+    const out = mapQqArtists([
+      { singerID: 42, singerName: "Y", singerPic: "https://y.gtimg.cn/music/photo_new/x.jpg" },
+    ]);
+    expect(out).toEqual([
+      {
+        id: "42",
+        name: "Y",
+        avatarUrl: "https://y.gtimg.cn/music/photo_new/x.jpg",
+        songCount: undefined,
+        albumCount: undefined,
+        platform: "qq",
+      },
+    ]);
+  });
+
+  it("drops entries without an id or name and tolerates empty input", () => {
+    expect(mapQqArtists([{ singerName: "no id" }, { singerMID: "x" }])).toEqual([]);
+    expect(mapQqArtists([])).toEqual([]);
+    expect(mapQqArtists(null as any)).toEqual([]);
+    expect(mapQqArtists(undefined as any)).toEqual([]);
   });
 });

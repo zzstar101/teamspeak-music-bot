@@ -470,6 +470,93 @@ export function createPlayerRouter(
     }
   });
 
+  // Play an artist's songs — mirrors play-album but calls getArtistSongs, which
+  // every artist-capable provider exposes as "this singer's hot songs".
+  router.post("/:botId/play-artist", authorize({ capability: "player.control", guestFlag: "playCollection" }), async (req, res) => {
+    try {
+      const bot = (req as any).bot;
+      const { artistId, platform } = req.body;
+      if (!artistId) {
+        res.status(400).json({ error: "artistId is required" });
+        return;
+      }
+      if (isLocalAudioDisabled(bot, platform)) {
+        rejectDisabledLocalAudio(res);
+        return;
+      }
+      const provider = bot.getProviderFor(
+        platform === "bilibili" || platform === "qq" || platform === "youtube" || platform === "local" || platform === "kugou" || platform === "jellyfin"
+          ? platform
+          : "netease"
+      );
+      if (typeof provider.getArtistSongs !== "function") {
+        res.status(501).json({ error: "Not supported by this provider" });
+        return;
+      }
+
+      // Stop current playback
+      bot.getPlayer().stop();
+      bot.getPlayer().resetFailures();
+
+      const songs = await provider.getArtistSongs(artistId, 50);
+      if (songs.length === 0) {
+        res.json({ ok: false, message: "该歌手暂无可用歌曲" });
+        return;
+      }
+
+      // Same QQ batch-resolve optimization as play-album: drop tracks that are
+      // region/copyright blocked instead of burning retries on them.
+      let queueable: { id: string }[] = songs;
+      const totalCount = songs.length;
+      const qqLike = provider as { getPlayableSongIds?: (ids: string[]) => Promise<Set<string> | null> };
+      if (typeof qqLike.getPlayableSongIds === "function") {
+        const playable = await qqLike.getPlayableSongIds(songs.map((s: { id: string }) => s.id));
+        if (playable !== null) {
+          queueable = songs.filter((s: { id: string }) => playable.has(s.id));
+        }
+      }
+      if (queueable.length === 0) {
+        res.json({ ok: false, message: `歌手 ${totalCount} 首歌曲均无版权可播放（区域/版权限制）` });
+        return;
+      }
+
+      const queue = bot.getQueueManager();
+      queue.clear();
+      for (const song of queueable) {
+        queue.add({ ...song, platform: provider.platform, requestedBy: requesterName(req) });
+      }
+      // Sweep AFTER the queue is rebuilt (see play-playlist).
+      bot.cleanupQueuedLocalSongs?.("queue_replaced");
+
+      const mode = queue.getMode();
+      let first;
+      if (mode === "random" || mode === "rloop") {
+        const idx = Math.floor(Math.random() * queue.size());
+        first = queue.playAt(idx);
+      } else {
+        first = queue.play();
+      }
+
+      let started = first ? await bot.resolveAndPlay(first) : false;
+      if (first && !started) {
+        started = await bot.playNext(20);
+      }
+
+      const playing = queue.current();
+      const loadedMsg = queueable.length < totalCount
+        ? `已加载 ${queueable.length}/${totalCount} 首（其余区域/版权限制）`
+        : `已加载 ${queueable.length} 首`;
+      if (started && playing) {
+        res.json({ ok: true, message: `${loadedMsg}，正在播放：${playing.name}` });
+      } else {
+        res.json({ ok: false, message: `${loadedMsg}，但无法开始播放。` });
+      }
+    } catch (err) {
+      logger.error({ err }, "play-artist failed");
+      res.status(500).json({ error: (err as Error).message });
+    }
+  });
+
   // Play a single song by ID — resolves URL on demand. Funnels through
   // bot.playSingleSong so the config.playKeepsQueue decision (clear-and-play vs
   // insert-and-jump, keeping the queue) lives in one place shared with chat
